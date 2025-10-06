@@ -1,7 +1,9 @@
 package vmaas
 
 import (
+	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/pkg/errors"
@@ -30,9 +32,19 @@ func filterInputCves(c *Cache, cves []string, req *CvesRequest) []string {
 		if req.RHOnly && cveDetail.Source != "Red Hat" {
 			continue
 		}
-		if req.AreErrataAssociated && len(cveDetail.ErratumIDs) == 0 {
-			// FIXME: also check CSAF
-			continue
+		if req.AreErrataAssociated {
+			hasErrata := len(cveDetail.ErratumIDs) > 0
+			hasCSAF := checkCSAFForCVE(c, cve)
+
+			utils.LogInfo("🔍 [FILTER] CVE:", cve)
+			utils.LogInfo("🔍 [FILTER] Has Errata:", fmt.Sprintf("%t", hasErrata))
+			utils.LogInfo("🔍 [FILTER] Has CSAF:", fmt.Sprintf("%t", hasCSAF))
+
+			if !hasErrata && !hasCSAF {
+				utils.LogInfo("🔍 [FILTER] Excluding CVE (no errata, no CSAF):", cve)
+				continue
+			}
+			utils.LogInfo("🔍 [FILTER] Including CVE (has errata or CSAF):", cve)
 		}
 
 		if req.ModifiedSince != nil {
@@ -69,7 +81,160 @@ func (c *Cache) getCveDetails(cves []string) CveDetails {
 	return cveDetails
 }
 
+// checkCSAFForCVE returns true if CVE exists in CSAF data
+func checkCSAFForCVE(c *Cache, cve string) bool {
+	// Find CVE ID
+	cveID := -1
+	for id, name := range c.CveNames {
+		if name == cve {
+			cveID = id
+			break
+		}
+	}
+
+	if cveID == -1 {
+		return false
+	}
+
+	// Check CSAF data for this CVE
+	for _, cpeData := range c.CSAFCVEs {
+		for _, productData := range cpeData {
+			for _, csafCves := range productData {
+				// Check if this CVE is in Fixed or Unfixed
+				for _, fixedCVE := range csafCves.Fixed {
+					if int(fixedCVE) == cveID {
+						return true
+					}
+				}
+				for _, unfixedCVE := range csafCves.Unfixed {
+					if int(unfixedCVE) == cveID {
+						return true
+					}
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+// getCSAFInfoForCVE returns CSAF information for a specific CVE
+func getCSAFInfoForCVE(c *Cache, cve string) map[string]interface{} {
+	csafInfo := make(map[string]interface{})
+
+	// Find CVE ID
+	cveID := -1
+	for id, name := range c.CveNames {
+		if name == cve {
+			cveID = id
+			break
+		}
+	}
+
+	if cveID == -1 {
+		csafInfo["found"] = false
+		csafInfo["message"] = "CVE not found in CSAF data"
+		return csafInfo
+	}
+
+	csafInfo["found"] = true
+	csafInfo["cve_id"] = cveID
+
+	// Check CSAF data for this CVE
+	csafProducts := make([]map[string]interface{}, 0)
+
+	// Iterate through CSAF data
+	for variant, cpeData := range c.CSAFCVEs {
+		for _, productData := range cpeData {
+			for productID, csafCves := range productData {
+				// Check if this CVE is in Fixed or Unfixed
+				fixed := false
+				unfixed := false
+
+				for _, fixedCVE := range csafCves.Fixed {
+					if int(fixedCVE) == cveID {
+						fixed = true
+						break
+					}
+				}
+
+				for _, unfixedCVE := range csafCves.Unfixed {
+					if int(unfixedCVE) == cveID {
+						unfixed = true
+						break
+					}
+				}
+
+				if fixed || unfixed {
+					product := c.CSAFProductID2Product[productID]
+					productInfo := map[string]interface{}{
+						"product_id":      int(productID),
+						"variant":         variant,
+						"cpe_id":          int(product.CpeID),
+						"package_name_id": int(product.PackageNameID),
+						"package_id":      int(product.PackageID),
+						"module_stream":   product.ModuleStream,
+						"fixed":           fixed,
+						"unfixed":         unfixed,
+					}
+					csafProducts = append(csafProducts, productInfo)
+				}
+			}
+		}
+	}
+
+	csafInfo["products"] = csafProducts
+	csafInfo["total_products"] = len(csafProducts)
+
+	return csafInfo
+}
+
+// logCvesRequestFields logs all fields from CvesRequest in a safe way
+func logCvesRequestFields(req *CvesRequest) {
+	// Convert time fields to strings safely
+	var publishedSinceStr, modifiedSinceStr string
+	if req.PublishedSince != nil {
+		publishedSinceStr = req.PublishedSince.Format(time.RFC3339)
+	} else {
+		publishedSinceStr = "<nil>"
+	}
+	if req.ModifiedSince != nil {
+		modifiedSinceStr = req.ModifiedSince.Format(time.RFC3339)
+	} else {
+		modifiedSinceStr = "<nil>"
+	}
+
+	// Simple log with basic info
+	utils.LogInfo("🔍 [CVE-REQUEST] START - CvesRequest received")
+	utils.LogInfo("📋 CVE Count:", fmt.Sprintf("%d", len(req.Cves)))
+	utils.LogInfo("📋 CVE List:", strings.Join(req.Cves, ","))
+	utils.LogInfo("📦 Errata Associated:", fmt.Sprintf("%t", req.AreErrataAssociated))
+	utils.LogInfo("🔴 RH Only:", fmt.Sprintf("%t", req.RHOnly))
+	utils.LogInfo("🌐 Third Party:", fmt.Sprintf("%t", req.ThirdParty))
+	utils.LogInfo("📅 Published Since:", publishedSinceStr)
+	utils.LogInfo("🔄 Modified Since:", modifiedSinceStr)
+	utils.LogInfo("📄 Page Number:", fmt.Sprintf("%d", req.PageNumber))
+	utils.LogInfo("📊 Page Size:", fmt.Sprintf("%d", req.PageSize))
+	utils.LogInfo("№№№№№№№№№№№№№№№№№№№№№", "END OF REQUEST FIELDS")
+}
+
 func (req *CvesRequest) cves(c *Cache) (*Cves, error) { // TODO: implement opts
+	// Log all CvesRequest fields using safe function
+	//logCvesRequestFields(req)
+
+	// // Log CSAF information for each CVE in the request
+	// for _, cve := range req.Cves {
+	// 	csafInfo := getCSAFInfoForCVE(c, cve)
+	// 	utils.LogInfo("🔍 [CSAF-INFO] CVE:", cve)
+	// 	utils.LogInfo("🔍 [CSAF-INFO] Found in CSAF:", fmt.Sprintf("%t", csafInfo["found"]))
+	// 	if csafInfo["found"].(bool) {
+	// 		utils.LogInfo("🔍 [CSAF-INFO] CVE ID:", fmt.Sprintf("%d", csafInfo["cve_id"]))
+	// 		utils.LogInfo("🔍 [CSAF-INFO] Total Products:", fmt.Sprintf("%d", csafInfo["total_products"]))
+	// 	} else {
+	// 		utils.LogInfo("🔍 [CSAF-INFO] Message:", csafInfo["message"].(string))
+	// 	}
+	// }
+
 	cves := req.Cves
 	if len(cves) == 0 {
 		return &Cves{}, errors.Wrap(ErrProcessingInput, "'cve_list' is a required property")
@@ -79,15 +244,46 @@ func (req *CvesRequest) cves(c *Cache) (*Cves, error) { // TODO: implement opts
 	if err != nil {
 		return &Cves{}, errors.Wrap(ErrProcessingInput, "invalid regex pattern")
 	}
+	// utils.LogInfo(" [CVE-REQUEST] After regex expansion:", "expanded_cves_count", len(cves))
 
 	cves = filterInputCves(c, cves, req)
+	// utils.LogInfo(" [CVE-REQUEST] After filtering:", "filtered_cves_count", len(cves))
+
 	slices.Sort(cves)
 	cves, pagination := utils.Paginate(cves, req.PaginationRequest)
+	// utils.LogInfo("[CVE-REQUEST] Final result:", "final_cves_count", len(cves), "pagination", pagination)
 
 	res := Cves{
 		Cves:       c.getCveDetails(cves),
 		LastChange: c.DBChange.LastChange,
 		Pagination: pagination,
 	}
+
+	// Log the result structure
+	utils.LogInfo("🔍 [CVE-RESULT] Final result structure:")
+	utils.LogInfo("🔍 [CVE-RESULT] CVE Count:", fmt.Sprintf("%d", len(res.Cves)))
+	utils.LogInfo("🔍 [CVE-RESULT] Last Change:", res.LastChange.Format(time.RFC3339))
+	utils.LogInfo("🔍 [CVE-RESULT] Page Number:", fmt.Sprintf("%d", res.PageNumber))
+	utils.LogInfo("🔍 [CVE-RESULT] Page Size:", fmt.Sprintf("%d", res.PageSize))
+	utils.LogInfo("🔍 [CVE-RESULT] Total Pages:", fmt.Sprintf("%d", res.TotalPages))
+
+	// Log each CVE in the result
+	for cveName, cveDetail := range res.Cves {
+		utils.LogInfo("🔍 [CVE-RESULT] CVE:", cveName)
+		utils.LogInfo("🔍 [CVE-RESULT] Impact:", cveDetail.Impact)
+		utils.LogInfo("🔍 [CVE-RESULT] CVSS3 Score:", cveDetail.Cvss3Score)
+		utils.LogInfo("🔍 [CVE-RESULT] Errata Count:", fmt.Sprintf("%d", len(cveDetail.Errata)))
+		utils.LogInfo("🔍 [CVE-RESULT] Packages Count:", fmt.Sprintf("%d", len(cveDetail.Packages)))
+		utils.LogInfo("🔍 [CVE-RESULT] Source Packages Count:", fmt.Sprintf("%d", len(cveDetail.SourcePackages)))
+		if len(cveDetail.Errata) > 0 {
+			utils.LogInfo("🔍 [CVE-RESULT] Errata List:", strings.Join(cveDetail.Errata, ","))
+		}
+		if len(cveDetail.Packages) > 0 {
+			utils.LogInfo("🔍 [CVE-RESULT] Package List:", strings.Join(cveDetail.Packages, ","))
+		}
+	}
+
+	utils.LogInfo("🔍 [CVE-RESULT] END OF RESULT")
+
 	return &res, nil
 }
