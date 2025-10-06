@@ -18,9 +18,45 @@ type Cves struct {
 	utils.Pagination
 }
 
+// buildCSAFCVESet creates a set of CVE IDs that have CSAF erratum
+// This is done once to avoid iterating through CSAF structures for each CVE
+// We use CSAFCVEProduct2Erratum which contains only CVEs with erratum (Fixed)
+func buildCSAFCVESet(c *Cache) map[int]bool {
+	csafCVESet := make(map[int]bool)
+
+	// Iterate through CSAFCVEProduct2Erratum map once
+	// This map contains only CVEs that have an associated erratum
+	for csafCVEProduct := range c.CSAFCVEProduct2Erratum {
+		csafCVESet[int(csafCVEProduct.CVEID)] = true
+	}
+	utils.LogInfo("We are here")
+	return csafCVESet
+}
+
+// buildCVEName2IDMap creates a reverse map from CVE name to CVE ID
+// This allows O(1) lookup instead of O(N) iteration through CveNames
+func buildCVEName2IDMap(c *Cache) map[string]int {
+	cveName2ID := make(map[string]int, len(c.CveNames))
+
+	for id, name := range c.CveNames {
+		cveName2ID[name] = id
+	}
+
+	return cveName2ID
+}
+
 func filterInputCves(c *Cache, cves []string, req *CvesRequest) []string {
 	isDuplicate := make(map[string]bool, len(cves))
 	filteredIDs := make([]string, 0, len(cves))
+
+	// Build CSAF CVE set and CVE name->ID map once before the loop (optimization)
+	var csafCVESet map[int]bool
+	var cveName2ID map[string]int
+	if req.AreErrataAssociated {
+		csafCVESet = buildCSAFCVESet(c)
+		cveName2ID = buildCVEName2IDMap(c)
+	}
+
 	for _, cve := range cves {
 		if cve == "" || isDuplicate[cve] {
 			continue
@@ -32,9 +68,13 @@ func filterInputCves(c *Cache, cves []string, req *CvesRequest) []string {
 		if req.RHOnly && cveDetail.Source != "Red Hat" {
 			continue
 		}
+
 		if req.AreErrataAssociated {
 			hasErrata := len(cveDetail.ErratumIDs) > 0
-			hasCSAF := checkCSAFForCVE(c, cve)
+
+			// Check if CVE exists in CSAF using pre-built maps (O(1) lookup)
+			cveID, exists := cveName2ID[cve]
+			hasCSAF := exists && csafCVESet[cveID]
 
 			utils.LogInfo("🔍 [FILTER] CVE:", cve)
 			utils.LogInfo("🔍 [FILTER] Has Errata:", fmt.Sprintf("%t", hasErrata))
@@ -79,43 +119,6 @@ func (c *Cache) getCveDetails(cves []string) CveDetails {
 		cveDetails[cve] = cveDetail
 	}
 	return cveDetails
-}
-
-// checkCSAFForCVE returns true if CVE exists in CSAF data
-func checkCSAFForCVE(c *Cache, cve string) bool {
-	// Find CVE ID
-	cveID := -1
-	for id, name := range c.CveNames {
-		if name == cve {
-			cveID = id
-			break
-		}
-	}
-
-	if cveID == -1 {
-		return false
-	}
-
-	// Check CSAF data for this CVE
-	for _, cpeData := range c.CSAFCVEs {
-		for _, productData := range cpeData {
-			for _, csafCves := range productData {
-				// Check if this CVE is in Fixed or Unfixed
-				for _, fixedCVE := range csafCves.Fixed {
-					if int(fixedCVE) == cveID {
-						return true
-					}
-				}
-				for _, unfixedCVE := range csafCves.Unfixed {
-					if int(unfixedCVE) == cveID {
-						return true
-					}
-				}
-			}
-		}
-	}
-
-	return false
 }
 
 // getCSAFInfoForCVE returns CSAF information for a specific CVE
