@@ -1,3 +1,5 @@
+github.com/RostyslavKachan/vmaas-lib v0.0.0-20250812134820-e3dd65669a1e h1:Lo9AL1Vp5tGxU6f8JudzQ2OmCBSZEB8KtSD4POW4+PI=
+github.com/RostyslavKachan/vmaas-lib v0.0.0-20250812134820-e3dd65669a1e/go.mod h1:DLpmWPZ8H8JbN768EoLAO8XzXFA32DPM35HB7DwziPM=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
